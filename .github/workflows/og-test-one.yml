@@ -1,0 +1,404 @@
+# og-test-one: one repository's turn in og-test-workflow (import → its Build iOS → cleanup). og-test-workflow runs this
+# once per repository in its list, one after another. See og-test-workflow.yml and .github/README.md.
+#
+#   1. import   clones the repository and commits its files onto main here, together with its "Build iOS" workflow,
+#               the workflows that one calls (e.g. set-version.yml) and its .github/scripts. Its other workflows are
+#               left out. Changes made to the copied workflows: IOS_PROVISIONING_PROFILE_BASE64 becomes
+#               IOS_PROVISIONING_PROFILE_<APP> (og-test holds every app's profile), and laptop runner labels become
+#               GitHub's (og-test is public, so nothing runs on the laptop).
+#   2. build    starts that copied "Build iOS" (version left at its default, Increment the build number,
+#               app-store-connect, Upload to TestFlight, Build even if nothing changed, Self Hosted off) and waits.
+#   3. cleanup  always runs: anything still running is cancelled, main goes back to a single commit with og-test's
+#               own .github and last-run.log (this repository's section added to it), and every other branch, tag,
+#               release, artifact, cache and earlier workflow run is deleted.
+# The source repository is only read, never changed.
+
+name: og-test-one
+
+on:
+  workflow_call:
+    inputs:
+      repo_url:
+        description: Link to the git repository to build
+        type: string
+        required: true
+      ref:
+        description: Branch or tag to build (empty = the repo's default branch)
+        type: string
+        default: ''
+      label:
+        description: Name shown for this repository in last-run.log; must match the calling job's name
+        type: string
+        default: ''
+      repo_list:
+        description: The whole list og-test-workflow was started with (for last-run.log's header)
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  # the settings "Build iOS" is started with (only the ones its form has are sent; version keeps its default).
+  # self_hosted is always false: og-test is public, so everything runs on GitHub's machines, never the laptop.
+  BUILD_INPUTS: '{"bump_build": "true", "export_method": "app-store-connect", "upload_testflight": "true", "force": "true", "self_hosted": "false"}'
+
+jobs:
+  import:
+    name: Import repository
+    runs-on: ubuntu-latest
+    outputs:
+      workflow: ${{ steps.copy.outputs.workflow }}
+      bundle_id: ${{ steps.copy.outputs.bundle_id }}
+      copied: ${{ steps.copy.outputs.copied }}
+      source_sha: ${{ steps.clone.outputs.sha }}
+    steps:
+      - name: Check the KIT_TOKEN secret
+        env:
+          TOKEN: ${{ secrets.KIT_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error title=KIT_TOKEN secret missing::og-test has no KIT_TOKEN secret. On the PC run push-github-secrets.ps1 -Only og-test (og-utils), and add og-test to the token's Repository access (Contents and Workflows: read and write)."; exit 1; }
+
+      - name: Checkout og-test
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          token: ${{ secrets.KIT_TOKEN }}   # pushing workflow files needs its Workflows permission
+
+      - name: Clone the repository
+        id: clone
+        env:
+          URL: ${{ inputs.repo_url }}
+          REF: ${{ inputs.ref }}
+          TOKEN: ${{ secrets.KIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          URL=$(printf '%s' "$URL" | tr -d '[:space:]')
+          [[ "$URL" =~ ^https://[A-Za-z0-9.-]+/[^[:space:]]+$ ]] || { echo "::error::\"$URL\" isn't an https link to a git repository"; exit 1; }
+          URL="${URL%/}"
+          SRC="$RUNNER_TEMP/source"
+          rm -rf "$SRC"
+          AUTH=()
+          # private OG Software repos: read with the kit token (only ever sent to github.com)
+          if [[ "$URL" == https://github.com/* ]]; then
+            AUTH=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)")
+          fi
+          git "${AUTH[@]}" clone --depth 1 ${REF:+--branch "$REF"} "$URL" "$SRC"
+          SHA=$(git -C "$SRC" rev-parse HEAD)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "dir=$SRC" >> "$GITHUB_OUTPUT"
+          echo "Cloned $URL${REF:+ ($REF)} at ${SHA::7}"
+
+      - name: Copy it and its Build iOS workflow into og-test
+        id: copy
+        env:
+          SRC: ${{ steps.clone.outputs.dir }}
+          URL: ${{ steps.clone.outputs.url }}
+          SHA: ${{ steps.clone.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # its "Build iOS" workflow (by name; build-ios.yml if none is called that)
+          WF=$(grep -l -E '^name: *["'"'"']?Build iOS["'"'"']? *$' "$SRC"/.github/workflows/*.y*ml 2>/dev/null | head -n1 || true)
+          [ -n "$WF" ] || WF=$(ls "$SRC"/.github/workflows/build-ios.y*ml 2>/dev/null | head -n1 || true)
+          [ -n "$WF" ] || { echo "::error::$URL has no \"Build iOS\" workflow in .github/workflows"; exit 1; }
+          WF=$(basename "$WF")
+          [ ! -e ".github/workflows/$WF" ] || { echo "::error::$WF has the same name as one of og-test's own workflows"; exit 1; }
+
+          # ...and every workflow it calls (uses: ./.github/workflows/x.yml), and what those call
+          COPY=("$WF"); i=0
+          while [ $i -lt ${#COPY[@]} ]; do
+            for DEP in $(grep -oE 'uses: *\./\.github/workflows/[A-Za-z0-9._-]+' "$SRC/.github/workflows/${COPY[$i]}" | sed 's#.*/##'); do
+              [[ " ${COPY[*]} " == *" $DEP "* ]] || COPY+=("$DEP")
+            done
+            i=$((i + 1))
+          done
+
+          # everything but .git and .github is replaced by the imported files
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          tar -C "$SRC" --exclude=./.git --exclude=./.github -cf - . | tar -xf -
+          for F in "${COPY[@]}"; do cp "$SRC/.github/workflows/$F" ".github/workflows/$F"; done
+          # the rest of its .github (scripts the workflows run), except its other workflows and repo settings files
+          tar -C "$SRC/.github" --exclude=./workflows --exclude=./README.md --exclude=./dependabot.yml --exclude=./dependabot.yaml -cf - . | tar -C .github -xf -
+
+          # og-test has every app's profile as IOS_PROVISIONING_PROFILE_<APP>: point the copied workflows at this app's
+          BID=$(awk '/^  applicationIdentifier:/{f=1;next} f&&/^    iPhone:/{print $2;exit} f&&!/^    /{exit}' ProjectSettings/ProjectSettings.asset 2>/dev/null || true)
+          [ -n "$BID" ] || BID=$(grep -h -m1 -oE 'BUNDLE_ID: *["'"'"']?[A-Za-z0-9_.-]+' ".github/workflows/$WF" | sed -E 's/.*[ "'"'"']//' || true)
+          [ -n "$BID" ] || BID=$(grep -h -m1 -oE 'com\.ogsoftware\.[A-Za-z0-9_-]+' ".github/workflows/$WF" || true)
+          [ -n "$BID" ] || { echo "::error::Couldn't find the app's bundle ID (ProjectSettings.asset or BUNDLE_ID in $WF)"; exit 1; }
+          APP=$(printf '%s' "${BID##*.}" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9\n' '_')
+          for F in "${COPY[@]}"; do
+            sed -i -E "s/secrets\.IOS_PROVISIONING_PROFILE_BASE64/secrets.IOS_PROVISIONING_PROFILE_$APP/g; s/secrets\.IOS_WATCH_PROVISIONING_PROFILE_BASE64/secrets.IOS_WATCH_PROVISIONING_PROFILE_$APP/g" ".github/workflows/$F"
+            # GitHub's machines only (og-test is public): the laptop's runner labels become GitHub's, and the
+            # LINUX_RUNNER / WINDOWS_RUNNER variables are ignored
+            sed -i -E "s/'og-linux'/'ubuntu-24.04'/g; s/'og-windows'/'windows-latest'/g; s/vars\.(LINUX|WINDOWS)_RUNNER *\|\| *//g" ".github/workflows/$F"
+          done
+          # nothing left that could pick the laptop (a fixed og-linux / og-windows / self-hosted runner)
+          if grep -n "runs-on:" $(printf '.github/workflows/%s ' "${COPY[@]}") | sed 's/ #.*//' | grep -E "og-linux|og-windows|self-hosted"; then
+            echo "::error::The copied workflows still ask for a self-hosted runner (above); og-test only uses GitHub's machines."; exit 1
+          fi
+
+          # the copied workflows must only ever write to og-test: refuse any that name the source repo
+          SOURCE_REPO=$(printf '%s' "$URL" | sed -E 's#^https://github.com/##; s#\.git$##')
+          if grep -n -i -F "$SOURCE_REPO" $(printf '.github/workflows/%s ' "${COPY[@]}") .github/scripts/* 2>/dev/null; then
+            echo "::error::The copied workflows name $SOURCE_REPO directly (above), so running them here could change the source repo. Not running them."; exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Import $URL at ${SHA::7} [skip ci]"
+          git push -q origin HEAD:main
+          echo "workflow=$WF" >> "$GITHUB_OUTPUT"
+          echo "bundle_id=$BID" >> "$GITHUB_OUTPUT"
+          echo "copied=${COPY[*]}" >> "$GITHUB_OUTPUT"
+          echo "Imported $(git ls-files | wc -l) files as $(git rev-parse --short HEAD); workflows: ${COPY[*]}; bundle ID $BID → IOS_PROVISIONING_PROFILE_$APP"
+          {
+            echo "### Imported"
+            echo "$URL at \`${SHA::7}\`, bundle ID \`$BID\` (profile secret \`IOS_PROVISIONING_PROFILE_$APP\`)"
+            echo "Workflows copied: ${COPY[*]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Run its Build iOS
+    needs: import
+    runs-on: ubuntu-latest   # only waits for Build iOS
+    timeout-minutes: 350
+    outputs:
+      run_id: ${{ steps.start.outputs.id }}   # kept even when this job fails, for last-run.log
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      WF: ${{ needs.import.outputs.workflow }}
+    steps:
+      - name: Checkout og-test
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          sparse-checkout: .github
+
+      - name: Start Build iOS
+        id: start
+        run: |
+          set -euo pipefail
+          # only send the settings the copied workflow's form has (GitHub rejects unknown ones)
+          ARGS=$(python3 - <<'PY'
+          import json, os, shlex, yaml
+          wf = yaml.safe_load(open(f".github/workflows/{os.environ['WF']}"))
+          on = wf.get("on", wf.get(True)) or {}
+          have = ((on.get("workflow_dispatch") or {}).get("inputs") or {}) if isinstance(on, dict) else {}
+          want = json.loads(os.environ["BUILD_INPUTS"])
+          print(" ".join(f"-f {shlex.quote(k + '=' + v)}" for k, v in want.items() if k in have))
+          PY
+          )
+          echo "Inputs: ${ARGS:-(none)}"
+          START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # GitHub may take a few seconds to register the workflow that was just pushed
+          for i in $(seq 1 12); do
+            if eval gh workflow run "\"$WF\"" -R "$REPO" --ref main $ARGS; then break; fi
+            [ "$i" -lt 12 ] || { echo "::error::Couldn't start $WF"; exit 1; }
+            sleep 10
+          done
+          for i in $(seq 1 30); do
+            ID=$(gh run list -R "$REPO" --workflow "$WF" --event workflow_dispatch --limit 10 --json databaseId,createdAt \
+                   --jq "[.[] | select(.createdAt >= \"$START\")] | last | .databaseId // empty")
+            [ -n "$ID" ] && break
+            sleep 5
+          done
+          [ -n "${ID:-}" ] || { echo "::error::Started $WF but couldn't find its run"; exit 1; }
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Build iOS run: $GITHUB_SERVER_URL/$REPO/actions/runs/$ID"
+          echo "### Build iOS: $GITHUB_SERVER_URL/$REPO/actions/runs/$ID" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for Build iOS to finish
+        env:
+          ID: ${{ steps.start.outputs.id }}
+        run: |
+          until [ "$(gh run view "$ID" -R "$REPO" --json status --jq .status 2>/dev/null)" = "completed" ]; do sleep 60; done
+          CONCLUSION=$(gh run view "$ID" -R "$REPO" --json conclusion --jq .conclusion)
+          echo "Build iOS finished: $CONCLUSION"
+          echo "Result: **$CONCLUSION**" >> "$GITHUB_STEP_SUMMARY"
+          [ "$CONCLUSION" = "success" ] && exit 0
+
+          # cleanup deletes the Build iOS run, so keep why it failed here: which jobs and steps failed, and their log
+          {
+            echo "### Failed jobs and steps"
+            gh api --paginate "repos/$REPO/actions/runs/$ID/jobs?per_page=100" --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | "- **\(.name)**: \(.conclusion)" + ([.steps[] | select(.conclusion == "failure") | "\n  - step *\(.name)* failed"] | join(""))'
+            echo
+            echo "Errors from the log:"
+            echo '```'
+            gh run view "$ID" -R "$REPO" --log-failed 2>/dev/null | grep -E '##\[error\]|error CS[0-9]+|[Ee]rror:|\*\* (ARCHIVE|EXPORT|BUILD) FAILED' | cut -c1-400 | tail -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Build iOS $CONCLUSION (its run is deleted by cleanup: see last-run.log in og-test, and this run's summary)"
+          exit 1
+
+  cleanup:
+    name: Clean up og-test
+    needs: [import, build]
+    if: always()   # passed, failed, skipped or cancelled
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      # e.g. when this run was cancelled while Build iOS was still going
+      - name: Cancel runs still going
+        run: |
+          for ID in $(gh api "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.status != "completed") | .id' | grep -vx "$GITHUB_RUN_ID" || true); do
+            gh run cancel "$ID" -R "$REPO" && echo "Cancelled run $ID" || true
+          done
+          for i in $(seq 1 30); do
+            LEFT=$(gh api "repos/$REPO/actions/runs?per_page=100" --jq '[.workflow_runs[] | select(.status != "completed") | .id] | map(select(. != '"$GITHUB_RUN_ID"')) | length')
+            [ "$LEFT" = "0" ] && break
+            sleep 10
+          done
+
+      # last-run.log: everything needed to see what happened, kept on main after the cleanup (each run replaces it)
+      - name: Write last-run.log
+        env:
+          LOG: ${{ runner.temp }}/last-run.log
+          SOURCE_URL: ${{ inputs.repo_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_SHA: ${{ needs.import.outputs.source_sha }}
+          WF: ${{ needs.import.outputs.workflow }}
+          COPIED: ${{ needs.import.outputs.copied }}
+          BUNDLE_ID: ${{ needs.import.outputs.bundle_id }}
+          BUILD_ID: ${{ needs.build.outputs.run_id }}
+          IMPORT_RESULT: ${{ needs.import.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          LABEL: ${{ inputs.label || inputs.repo_url }}
+          REPO_LIST: ${{ inputs.repo_list }}
+        run: |
+          set +e
+          RUN_URL="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          PART="$RUNNER_TEMP/this-repo.log"
+          # this repository's jobs in og-test-workflow are named "<label> / <job>"
+          MINE="select(.name | startswith($(jq -cn --arg l "$LABEL / " '$l')))"
+          section() { printf '\n\n==================== %s ====================\n' "$1"; }
+          jobs_table() {   # jobs and steps of a run (optionally only those matching the filter $2): result, times (UTC)
+            local Q='"\(.conclusion // .status | ascii_upcase)  \(.name)  [\(.started_at // "-") -> \(.completed_at // "-")]", (.steps[]? | "    \(.conclusion // .status)  \(.name)")'
+            gh api --paginate "repos/$REPO/actions/runs/$1/jobs?per_page=100" --jq ".jobs[] | ${2:-.} | $Q"
+          }
+          annotations() {   # GitHub's error / warning annotations of a run's jobs
+            for J in $(gh api --paginate "repos/$REPO/actions/runs/$1/jobs?per_page=100" --jq '.jobs[].id'); do
+              gh api "repos/$REPO/check-runs/$J/annotations" --jq '.[] | "\(.annotation_level | ascii_upcase): \(.message | gsub("\n"; " "))"' 2>/dev/null
+            done | grep -v -i 'node\.js 20' | sort -u
+          }
+          {
+            section "$LABEL"
+            echo "Written:          $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "Source:           $SOURCE_URL${SOURCE_REF:+ (ref $SOURCE_REF)} at ${SOURCE_SHA:-?}"
+            echo "Bundle ID:        ${BUNDLE_ID:-?}"
+            echo "Workflow run:     ${WF:-?} (copied: ${COPIED:-?})"
+            echo "Started with:     $BUILD_INPUTS"
+            echo "Import:           $IMPORT_RESULT"
+            if [ -n "$BUILD_ID" ]; then
+              BUILD_CONCLUSION=$(gh run view "$BUILD_ID" -R "$REPO" --json conclusion --jq '.conclusion // "unfinished"' 2>/dev/null)
+              echo "Build iOS:        ${BUILD_CONCLUSION:-?}  (run $BUILD_ID, deleted by this cleanup)"
+            else
+              echo "Build iOS:        not started (og-test-workflow's build job: $BUILD_RESULT)"
+            fi
+
+            section "$LABEL: og-test-workflow jobs"
+            jobs_table "$GITHUB_RUN_ID" "$MINE"
+
+            # a failed og-test-workflow job of this repository (import, or the start / wait job): its whole log
+            for J in $(gh api --paginate "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq ".jobs[] | $MINE | select(.conclusion == \"failure\") | .id"); do
+              section "$LABEL: og-test-workflow log of job $J"
+              gh api "repos/$REPO/actions/jobs/$J/logs" 2>&1 | tail -3000
+            done
+
+            if [ -n "$BUILD_ID" ]; then
+              section "$LABEL: Build iOS jobs and steps"
+              jobs_table "$BUILD_ID"
+              section "$LABEL: Build iOS annotations"
+              annotations "$BUILD_ID"
+              if [ "$BUILD_CONCLUSION" != "success" ]; then
+                gh run view "$BUILD_ID" -R "$REPO" --log-failed > "$RUNNER_TEMP/failed.log" 2>&1
+                section "$LABEL: Build iOS error lines from the failed steps"
+                grep -E '##\[error\]|error CS[0-9]+|[Ee]rror:|Exception|\*\* (ARCHIVE|EXPORT|BUILD) FAILED|exit code [1-9]|Build Finished, Result' "$RUNNER_TEMP/failed.log" | cut -c1-600 | tail -300
+                section "$LABEL: Build iOS log of the failed steps (last 20000 lines)"
+                tail -20000 "$RUNNER_TEMP/failed.log"
+              fi
+            fi
+          } > "$PART" 2>&1
+
+          # one last-run.log per og-test-workflow run: earlier repositories of this run stay in it (their sections
+          # first), a log from an earlier run is replaced
+          gh api "repos/$REPO/contents/last-run.log?ref=main" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/prev.log" 2>/dev/null || : > "$RUNNER_TEMP/prev.log"
+          if grep -q -F "og-test-workflow: run $GITHUB_RUN_NUMBER  $RUN_URL" "$RUNNER_TEMP/prev.log"; then
+            cat "$RUNNER_TEMP/prev.log" "$PART" > "$LOG"
+          else
+            {
+              echo "og-test last run (replaced by every og-test-workflow run)"
+              echo "og-test-workflow: run $GITHUB_RUN_NUMBER  $RUN_URL"
+              echo "Repositories:     $REPO_LIST"
+              cat "$PART"
+            } > "$LOG"
+          fi
+          echo "last-run.log: $(wc -l < "$LOG") lines, $(du -h "$LOG" | cut -f1)"
+          head -30 "$PART"
+
+      - name: Checkout og-test
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0   # main's short history: back to the previous cleanup's single commit
+          token: ${{ secrets.KIT_TOKEN || github.token }}   # KIT_TOKEN: force-pushing .github/workflows needs Workflows
+
+      # main = one commit with only og-test's own .github (this workflow and the README) and last-run.log: the
+      # imported files, the copied workflows and all earlier commits are gone from the branch
+      - name: Reset main to og-test's own files and last-run.log, without history
+        env:
+          LOG: ${{ runner.temp }}/last-run.log
+          LABEL: ${{ inputs.label || inputs.repo_url }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # og-test's own .github: from the commit this og-test-workflow run started from while it's still on main
+          # (the first repository of a list); after that, from main's first commit, which the previous repository's
+          # cleanup wrote with that same .github
+          if git merge-base --is-ancestor "$GITHUB_SHA" HEAD 2>/dev/null; then BASE="$GITHUB_SHA"; else BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi
+          GITHUB_TREE=$(git rev-parse "$BASE:.github")
+          echo "og-test's own files from $(git rev-parse --short "$BASE")"
+          [ -f "$LOG" ] || echo "last-run.log couldn't be written (see the Write last-run.log step of $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID)" > "$LOG"
+          LOG_BLOB=$(git hash-object -w "$LOG")
+          TREE=$(printf '040000 tree %s\t.github\n100644 blob %s\tlast-run.log\n' "$GITHUB_TREE" "$LOG_BLOB" | git mktree)
+          COMMIT=$(git commit-tree "$TREE" -m "og-test: workflows and last-run.log (cleaned up after $LABEL, run $GITHUB_RUN_NUMBER)")
+          git push -q --force origin "$COMMIT:refs/heads/main"
+          echo "main is now $(git rev-parse --short "$COMMIT") (no parents)"
+
+      - name: Delete other branches
+        run: |
+          gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name' | grep -vx main | while read -r B; do
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$B" && echo "Deleted branch $B" || echo "::warning::Couldn't delete branch $B"
+          done
+
+      - name: Delete releases and tags
+        run: |
+          gh release list -R "$REPO" --limit 1000 --json tagName --jq '.[].tagName' | while read -r T; do
+            gh release delete "$T" -R "$REPO" --yes --cleanup-tag && echo "Deleted release $T" || echo "::warning::Couldn't delete release $T"
+          done
+          gh api --paginate "repos/$REPO/tags?per_page=100" --jq '.[].name' | while read -r T; do
+            gh api -X DELETE "repos/$REPO/git/refs/tags/$T" && echo "Deleted tag $T" || echo "::warning::Couldn't delete tag $T"
+          done
+
+      - name: Delete artifacts and caches
+        run: |
+          gh api --paginate "repos/$REPO/actions/artifacts?per_page=100" --jq '.artifacts[] | "\(.id) \(.name)"' | while read -r ID NAME; do
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$ID" && echo "Deleted artifact $NAME" || echo "::warning::Couldn't delete artifact $NAME"
+          done
+          gh api --paginate "repos/$REPO/actions/caches?per_page=100" --jq '.actions_caches[].id' | while read -r ID; do
+            gh api -X DELETE "repos/$REPO/actions/caches/$ID" > /dev/null && echo "Deleted cache $ID" || echo "::warning::Couldn't delete cache $ID"
+          done
+
+      - name: Delete earlier workflow runs
+        run: |
+          IDS=$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[].id' | grep -vx "$GITHUB_RUN_ID" || true)
+          for ID in $IDS; do
+            gh api -X DELETE "repos/$REPO/actions/runs/$ID" && echo "Deleted run $ID" || echo "::warning::Couldn't delete run $ID (still running?)"
+          done
+          echo "This og-test-workflow run ($GITHUB_RUN_ID) stays until the next one: GitHub can't delete a run that's in progress."
