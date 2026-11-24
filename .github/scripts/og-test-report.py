@@ -203,6 +203,7 @@ header = f"""{RUN_MARK}
 | Duration | {run_min if run_min is not None else '?'} minutes{'' if done else ' so far'} |
 | Run | [og-test-workflow #{E('GITHUB_RUN_NUMBER')}]({RUN_URL}), started {f'{started:%Y-%m-%d %H:%M} UTC' if started else '?'} |
 | Repositories | {(E('REPO_LIST') or '').replace('|', '/')} |
+| Skipped | {(E('SKIPPED') or 'none').replace('|', '/')} |
 | Bump version | {'on' if E('BUMP_VERSION_INPUT') == 'true' else 'off'} |
 
 Each repository below: click to expand everything needed to troubleshoot it (its Build iOS run is deleted by the

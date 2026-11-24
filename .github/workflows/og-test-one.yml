@@ -35,6 +35,10 @@ on:
         description: The whole list og-test-workflow was started with (for last-run.md's header)
         type: string
         default: ''
+      skipped:
+        description: Repositories og-test-workflow left out and why (for last-run.md's header)
+        type: string
+        default: ''
       total:
         description: How many repositories the whole list has (for last-run.md's header)
         type: string
@@ -377,6 +381,7 @@ jobs:
           VERSION_BACK: ${{ needs.version_back.result }}
           BUMP_VERSION_INPUT: ${{ inputs.bump_version }}
           REPO_LIST: ${{ inputs.repo_list }}
+          SKIPPED: ${{ inputs.skipped }}
         run: |
           # og-test's own copy of the script: from the commit this run started from, like the rest of .github
           if git merge-base --is-ancestor "$GITHUB_SHA" HEAD 2>/dev/null; then BASE="$GITHUB_SHA"; else BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi

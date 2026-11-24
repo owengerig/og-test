@@ -3,9 +3,13 @@
 A throwaway build bench: give it a link to one of the OG Software apps and it runs that app's own **Build iOS**
 workflow here (signed `.ipa`, TestFlight upload), then wipes itself.
 
-**Actions → og-test-workflow → Run workflow**, enter the repositories, comma-separated, and run:
-`nato-squad, 2d-clash, CardCombat`. Each entry can be a name (one of owengerig's repos), `owner/name`, or a link;
-add `@branch` to build a branch (`2d-clash@dev`).
+**Actions → og-test-workflow → Run workflow**:
+
+- **Repos:** comma-separated, e.g. `nato-squad, 2d-clash, CardCombat`. Each can be a name (one of owengerig's repos),
+  `owner/name` or a link; add `@branch` to build a branch (`2d-clash@dev`). **Leave it empty to build every repo the
+  KIT_TOKEN can see** that has a Build iOS workflow; the rest (og-utils, og-content, ...) are skipped and listed as
+  skipped in the run summary and `last-run.md`.
+- **Exclude:** repos never to build, comma-separated (default `og-test, project-default`).
 
 Tick **Bump version** to raise each repository's version by one patch before building: its current version (Unity's
 `bundleVersion`, or the Version box default for PinTally / StoryHub) goes from 1.3.0 to 1.3.1, or 1.3.9 to 1.3.10. When
