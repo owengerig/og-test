@@ -10,10 +10,10 @@ workflow here (signed `.ipa`, TestFlight upload), then wipes itself.
   KIT_TOKEN can see** that has a Build iOS workflow; the rest (og-utils, og-content, ...) are skipped and listed as
   skipped in the run summary and `last-run.md`.
 
-Tick **Bump version** to raise each repository's version by one patch before building: its current version (Unity's
-`bundleVersion`, or the Version box default for PinTally / StoryHub) goes from 1.3.0 to 1.3.1, or 1.3.9 to 1.3.10. When
-that repository's Build iOS succeeds, the new version is committed to the source repository (only the version: the
-same files set-version.sh writes it to). If the build fails, the source keeps its old version.
+**Version** is passed to each repository's Build iOS: **build only** (the default: just +1 build), **patch** (1.3.0 →
+1.3.1), **minor** (→ 1.4.0), **major** (→ 2.0.0) or **skip**. With patch, minor or major, when that repository's Build
+iOS succeeds, the new version is committed to the source repository (only the version: the same files set-version.sh
+writes it to). If the build fails, the source keeps its old version.
 
 They run **one at a time, in that order**, each through `og-test-one.yml`: import → its Build iOS → cleanup, then the
 next one. A failed one doesn't stop the rest. At the end, `last-run.md` on `main` has a section for every repository
@@ -22,14 +22,14 @@ of the run.
 | Step | What happens |
 |---|---|
 | Import | The repo is cloned and its files are committed onto `main` here, with its **Build iOS** workflow, the workflows that one calls (e.g. `set-version.yml`) and its `.github/scripts`. Its other workflows are left out. |
-| Run its Build iOS | Started with Version **build only** (**patch** with Bump version) and **Use SHR off**; it always uploads to TestFlight. (Older Build iOS workflows: *Increment the build number*, *app-store-connect*, *Upload to TestFlight*, *Build even if nothing changed*.) og-test-workflow waits for it to finish. |
+| Run its Build iOS | Started with the chosen **Version** (default **build only**); Build iOS always builds on GitHub's machines and uploads to TestFlight. og-test-workflow waits for it to finish. |
 | Clean up | Always runs, pass or fail: runs still going are cancelled, `main` goes back to one commit holding only og-test's `.github` and **`last-run.md`**, and every other branch, tag, release, artifact, cache and earlier workflow run is deleted. |
 
 **GitHub's machines only.** og-test is public, so nothing runs on the laptop: Build iOS is started with Self Hosted
 off, and the copied workflows' laptop labels (`og-linux`, `og-windows`, the `LINUX_RUNNER` / `WINDOWS_RUNNER`
 variables) are swapped for GitHub's (`ubuntu-24.04`, `windows-latest`). The Xcode build is on GitHub's Mac as always.
 
-**The source repo is never changed**, except for Bump version's version commit after a successful build. og-test-workflow
+**The source repo is never changed**, except for the version commit after a successful patch / minor / major build. og-test-workflow
 otherwise only clones it (reads). Everything the copied workflows
 write (version commit, release, tags) goes to og-test, and the import refuses to run copied workflows that name the
 source repo directly.
@@ -47,7 +47,7 @@ Written by each repository's cleanup, since its Build iOS run is deleted (a new 
 
 - **At the top:** whether the whole run succeeded or failed (how many repositories failed) and how long it took, in minutes.
 - **One collapsible section per repository:** its one-line summary says whether it succeeded or failed (and where), the
-  version and build it built, whether it went to TestFlight, and whether Bump version saved the new version in the
+  version and build it built, whether it went to TestFlight, and whether the new version (patch / minor / major) was saved in the
   source repo. Expand it for everything needed to troubleshoot: source commit, bundle ID, settings, every job and
   failed step with times, GitHub's annotations, the error lines, and the last 1,500 lines of the failed steps' log
   (secrets show as `***`).
@@ -63,7 +63,7 @@ Written by each repository's cleanup, since its Build iOS run is deleted (a new 
 
 ## Notes
 
-- The version bump is only saved in the throwaway copy, not in the app's own repo. The copied set-version step
+- Build numbers are only saved in the throwaway copy, not in the app's own repo. The copied set-version step
   still raises the build number above whatever TestFlight already has.
 - PinTally's Firebase files and StoryHub's own secrets aren't pushed to og-test, so those two build here without them.
 - On GitHub's machines Unity imports the whole project every time (no saved Library), so a build takes longer than
