@@ -4,7 +4,6 @@
 REPOS    comma-separated names (nato-squad = github.com/<OWNER>/nato-squad), owner/name or links; name@branch for a
          branch. Empty = every repository the token (GH_TOKEN, the KIT_TOKEN) can see that has a "Build iOS" workflow;
          the others (og-utils, ...) are skipped and listed as such.
-EXCLUDE  comma-separated repository names never to build (set in og-test-workflow.yml: og-test, project-default).
 OWNER    the default owner for bare names.
 
 Writes `repos` (the matrix JSON) and `skipped` (one line of what was left out and why) to GITHUB_OUTPUT.
@@ -38,7 +37,6 @@ def has_build_ios(full_name):
 
 
 owner = os.environ["OWNER"]
-exclude = {x.strip().lower() for x in os.environ.get("EXCLUDE", "").split(",") if x.strip()}
 given = [x.strip() for x in re.split(r"[,\n]", os.environ.get("REPOS", "")) if x.strip()]
 skipped = []
 entries = []   # (name, url, ref)
@@ -59,9 +57,6 @@ if given:
             print(f"::error::\"{item}\" is not a repository name or https link", file=sys.stderr)
             sys.exit(1)
         name = re.sub(r"\.git$", "", url.rsplit("/", 1)[-1])
-        if name.lower() in exclude:
-            skipped.append(f"{name} (excluded)")
-            continue
         entries.append((name, url, ref))
 else:
     # every repository the token can see (a fine-grained token: the ones in its Repository access)
@@ -73,9 +68,7 @@ else:
     repos = sorted(repos, key=lambda r: r["name"].lower())
     for r in repos:
         name, full = r["name"], r["full_name"]
-        if name.lower() in exclude:
-            skipped.append(f"{name} (excluded)")
-        elif r.get("archived"):
+        if r.get("archived"):
             skipped.append(f"{name} (archived)")
         elif not has_build_ios(full):
             skipped.append(f"{name} (no Build iOS workflow)")

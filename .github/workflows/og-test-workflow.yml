@@ -1,7 +1,7 @@
 # og-test-workflow: build OG Software apps for iOS (and send them to TestFlight) with each app's own "Build iOS"
 # workflow, from a throwaway copy in this repo. Give it a comma-separated list of repositories; one at a time, in that
 # order, each one goes through og-test-one.yml (leave Repos empty for every repository the KIT_TOKEN can see that has
-# a Build iOS workflow; og-test and project-default are never built):
+# a Build iOS workflow; the rest are skipped):
 #
 #   import    clone the repository and its Build iOS workflow (with what that calls) into og-test
 #   build     run that Build iOS on GitHub's machines (signed .ipa, TestFlight upload) and wait for it
@@ -55,7 +55,6 @@ jobs:
         id: list
         env:
           REPOS: ${{ inputs.repos }}
-          EXCLUDE: og-test, project-default   # never built (og-test itself, and the kit)
           OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ secrets.KIT_TOKEN }}   # lists the repos it can see when Repos is empty
         run: python3 .github/scripts/og-test-list.py
