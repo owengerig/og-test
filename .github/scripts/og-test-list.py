@@ -4,7 +4,7 @@
 REPOS    comma-separated names (nato-squad = github.com/<OWNER>/nato-squad), owner/name or links; name@branch for a
          branch. Empty = every repository the token (GH_TOKEN, the KIT_TOKEN) can see that has a "Build iOS" workflow;
          the others (og-utils, ...) are skipped and listed as such.
-EXCLUDE  comma-separated repository names never to build (e.g. og-test, project-default); applies to both.
+EXCLUDE  comma-separated repository names never to build (set in og-test-workflow.yml: og-test, project-default).
 OWNER    the default owner for bare names.
 
 Writes `repos` (the matrix JSON) and `skipped` (one line of what was left out and why) to GITHUB_OUTPUT.
