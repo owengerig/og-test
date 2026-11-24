@@ -22,6 +22,10 @@ on:
         description: "Repositories, comma-separated: names (nato-squad = github.com/owengerig/nato-squad) or links; name@branch for a branch"
         type: string
         required: true
+      bump_version:
+        description: "Bump version: start each repo's Build iOS with its current version, patch + 1 (1.3.0 → 1.3.1, 1.3.9 → 1.3.10)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # import commits, cleanup of branches / tags / releases
@@ -93,4 +97,5 @@ jobs:
       ref: ${{ matrix.ref }}
       label: ${{ matrix.label }}
       repo_list: ${{ inputs.repos }}
+      bump_version: ${{ inputs.bump_version }}
     secrets: inherit

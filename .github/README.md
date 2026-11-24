@@ -7,6 +7,11 @@ workflow here (signed `.ipa`, TestFlight upload), then wipes itself.
 `nato-squad, 2d-clash, CardCombat`. Each entry can be a name (one of owengerig's repos), `owner/name`, or a link;
 add `@branch` to build a branch (`2d-clash@dev`).
 
+Tick **Bump version** to raise each repository's version by one patch before building: its current version (Unity's
+`bundleVersion`, or the Version box default for PinTally / StoryHub) goes from 1.3.0 to 1.3.1, or 1.3.9 to 1.3.10. When
+that repository's Build iOS succeeds, the new version is committed to the source repository (only the version: the
+same files set-version.sh writes it to). If the build fails, the source keeps its old version.
+
 They run **one at a time, in that order**, each through `og-test-one.yml`: import → its Build iOS → cleanup, then the
 next one. A failed one doesn't stop the rest. At the end, `last-run.log` on `main` has a section for every repository
 of the run.
@@ -21,7 +26,8 @@ of the run.
 off, and the copied workflows' laptop labels (`og-linux`, `og-windows`, the `LINUX_RUNNER` / `WINDOWS_RUNNER`
 variables) are swapped for GitHub's (`ubuntu-24.04`, `windows-latest`). The Xcode build is on GitHub's Mac as always.
 
-**The source repo is never changed.** og-test-workflow only clones it (reads). Everything the copied workflows
+**The source repo is never changed**, except for Bump version's version commit after a successful build. og-test-workflow
+otherwise only clones it (reads). Everything the copied workflows
 write (version commit, release, tags) goes to og-test, and the import refuses to run copied workflows that name the
 source repo directly.
 
