@@ -4,7 +4,7 @@ result and duration. Run by og-test-one.yml's cleanup, once per repository, befo
 adds that repository's section to the sections already written in this run (a log from an earlier run is replaced).
 
 Environment (set by og-test-one.yml): REPO, GITHUB_*, LABEL, INDEX, TOTAL, SOURCE_URL, SOURCE_REF, SOURCE_SHA, WF,
-COPIED, BUNDLE_ID, BUILD_ID, IMPORT_RESULT, BUILD_RESULT, VERSION_FROM, VERSION_TO, VERSION_BACK, BUMP_VERSION_INPUT,
+COPIED, BUNDLE_ID, BUILD_ID, IMPORT_RESULT, BUILD_RESULT, VERSION_FROM, VERSION_TO, VERSION_BACK, INCREMENT_INPUT,
 BUILD_INPUTS, REPO_LIST, PREV (the current last-run.md, if any), OUT (where to write it).
 """
 import datetime as dt
@@ -128,8 +128,8 @@ rows = [
     ("Uploaded to TestFlight", "yes" if uploaded else "no"),
     ("Workflow run", f"`{E('WF') or '?'}` (copied: {E('COPIED') or '?'})"),
     ("Started with", f"`{E('BUILD_INPUTS', '')}`"),
-    ("Bump version", f"{E('VERSION_FROM')} → {E('VERSION_TO')} (saved in the source repo: {E('VERSION_BACK') or 'not run'})"
-                     if E("VERSION_TO") else ("on, but no version was set" if E("BUMP_VERSION_INPUT") == "true" else "off")),
+    ("Version", f"{E('INCREMENT_INPUT')}: {E('VERSION_FROM')} → {E('VERSION_TO')} (saved in the source repo: {E('VERSION_BACK') or 'not run'})"
+                if E("VERSION_TO") else (E("INCREMENT_INPUT") or "-")),
     ("og-test-workflow jobs", f"import: {icon(import_res)} {import_res} · Build iOS: {icon(build_res)} {build_res}"),
     ("Build iOS run", f"{build_id} ({build_conclusion}; deleted by the cleanup)" if build_id else "not started"),
     ("Time", f"{repo_start:%Y-%m-%d %H:%M} → {now:%H:%M} UTC{took_txt}" if repo_start else "-"),
@@ -204,7 +204,7 @@ header = f"""{RUN_MARK}
 | Run | [og-test-workflow #{E('GITHUB_RUN_NUMBER')}]({RUN_URL}), started {f'{started:%Y-%m-%d %H:%M} UTC' if started else '?'} |
 | Repositories | {(E('REPO_LIST') or '').replace('|', '/')} |
 | Skipped | {(E('SKIPPED') or 'none').replace('|', '/')} |
-| Bump version | {'on' if E('BUMP_VERSION_INPUT') == 'true' else 'off'} |
+| Version | {E('INCREMENT_INPUT') or '-'} |
 
 Each repository below: click to expand everything needed to troubleshoot it (its Build iOS run is deleted by the
 cleanup). This file is replaced by every og-test-workflow run.

@@ -6,13 +6,13 @@
 #               left out. Changes made to the copied workflows: IOS_PROVISIONING_PROFILE_BASE64 becomes
 #               IOS_PROVISIONING_PROFILE_<APP> (og-test holds every app's profile), and laptop runner labels become
 #               GitHub's (og-test is public, so nothing runs on the laptop).
-#   2. build    starts that copied "Build iOS" (version left at its default, Increment the build number,
-#               app-store-connect, Upload to TestFlight, Build even if nothing changed, Self Hosted off) and waits.
+#   2. build    starts that copied "Build iOS" with the chosen Version (it always builds on GitHub's machines and
+#               uploads to TestFlight) and waits.
 #   3. cleanup  always runs: anything still running is cancelled, main goes back to a single commit with og-test's
 #               own .github and last-run.md (this repository's section added to it), and every other branch, tag,
 #               release, artifact, cache and earlier workflow run is deleted.
-# The source repository is only read, never changed, except with Bump version: after a successful Build iOS the new
-# version (and nothing else) is committed to it.
+# The source repository is only read, never changed, except with Version patch / minor / major: after a successful
+# Build iOS the new version (and nothing else) is committed to it.
 
 name: og-test-one
 
@@ -43,19 +43,19 @@ on:
         description: How many repositories the whole list has (for last-run.md's header)
         type: string
         default: '1'
-      bump_version:
-        description: Start Build iOS with the repo's current version, patch + 1 (1.3.9 → 1.3.10)
-        type: boolean
-        default: false
+      increment:
+        description: "Build iOS's Version choice: patch, minor or major (the new version is saved in the source repo after a successful build), build only or skip"
+        type: string
+        default: build only
 
 permissions:
   contents: write
   actions: write
 
 env:
-  # the settings "Build iOS" is started with (only the ones its form has are sent; version keeps its default).
-  # self_hosted is always false: og-test is public, so everything runs on GitHub's machines, never the laptop.
-  BUILD_INPUTS: '{"bump_build": "true", "export_method": "app-store-connect", "upload_testflight": "true", "force": "true", "self_hosted": "false"}'
+  # what "Build iOS" is started with: just its Version choice (it always builds on GitHub's machines and uploads to
+  # TestFlight)
+  BUILD_INPUTS: '{"increment": "${{ inputs.increment }}"}'
 
 jobs:
   import:
@@ -196,40 +196,30 @@ jobs:
       - name: Start Build iOS
         id: start
         env:
-          BUMP_VERSION: ${{ inputs.bump_version }}
+          INCREMENT: ${{ inputs.increment }}
         run: |
           set -euo pipefail
-          # Bump version: the repo's current version is its Unity bundleVersion, or (PinTally, StoryHub) the default
-          # of Build iOS's Version box, which every build keeps up to date
-          PS_VERSION=""
-          if [ "$BUMP_VERSION" = "true" ]; then
-            PS_VERSION=$(gh api "repos/$REPO/contents/ProjectSettings/ProjectSettings.asset?ref=main" -H "Accept: application/vnd.github.raw" 2>/dev/null \
-              | grep -m1 '^  bundleVersion:' | sed 's/^  bundleVersion: *//' | tr -d '\r"' || true)
+          # patch / minor / major: work out the new version now, so it can be saved in the source repo after a
+          # successful build (Build iOS raises it the same way). The current version is the Unity bundleVersion,
+          # PinTally's version.properties or StoryHub's package.json.
+          if [[ "$INCREMENT" =~ ^(patch|minor|major)$ ]]; then
+            raw() { gh api "repos/$REPO/contents/$1?ref=main" -H "Accept: application/vnd.github.raw" 2>/dev/null || true; }
+            CUR=$(raw ProjectSettings/ProjectSettings.asset | grep -m1 '^  bundleVersion:' | sed 's/^  bundleVersion: *//' | tr -d '\r"' || true)
+            [ -n "$CUR" ] || CUR=$(raw version.properties | grep -m1 '^VERSION_NAME=' | cut -d= -f2 | tr -d '\r[:space:]' || true)
+            [ -n "$CUR" ] || CUR=$(raw package.json | jq -r '.version // empty' 2>/dev/null || true)
+            [[ "$CUR" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "::error::The current version \"$CUR\" isn't major.minor.patch"; exit 1; }
+            MA=${BASH_REMATCH[1]}; MI=${BASH_REMATCH[2]}; PA=${BASH_REMATCH[3]}
+            case "$INCREMENT" in
+              patch) NEW="$MA.$MI.$((PA + 1))" ;;
+              minor) NEW="$MA.$((MI + 1)).0" ;;
+              major) NEW="$((MA + 1)).0.0" ;;
+            esac
+            echo "version_from=$CUR" >> "$GITHUB_OUTPUT"
+            echo "version_to=$NEW" >> "$GITHUB_OUTPUT"
+            echo "Version $INCREMENT: $CUR -> $NEW"
           fi
-          export PS_VERSION
-          # only send the settings the copied workflow's form has (GitHub rejects unknown ones)
-          ARGS=$(python3 - <<'PY'
-          import json, os, re, shlex, sys, yaml
-          wf = yaml.safe_load(open(f".github/workflows/{os.environ['WF']}"))
-          on = wf.get("on", wf.get(True)) or {}
-          have = ((on.get("workflow_dispatch") or {}).get("inputs") or {}) if isinstance(on, dict) else {}
-          want = json.loads(os.environ["BUILD_INPUTS"])
-          if os.environ.get("BUMP_VERSION") == "true":
-              if "version" not in have:
-                  print(f"::warning::{os.environ['WF']} has no Version box: building without a version bump", file=sys.stderr)
-              else:
-                  cur = (os.environ.get("PS_VERSION") or str(have["version"].get("default") or "")).strip()
-                  m = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", cur)
-                  if not m:
-                      print(f"::error::Bump version: the current version \"{cur}\" isn't major.minor.patch", file=sys.stderr); sys.exit(1)
-                  new = f"{m[1]}.{m[2]}.{int(m[3] or 0) + 1}"
-                  want["version"] = new
-                  with open(os.environ["GITHUB_OUTPUT"], "a") as o:
-                      o.write(f"version_from={cur}\nversion_to={new}\n")
-                  print(f"Bump version: {cur} -> {new}", file=sys.stderr)
-          print(" ".join(f"-f {shlex.quote(k + '=' + v)}" for k, v in want.items() if k in have))
-          PY
-          )
+          grep -q '^      increment:' ".github/workflows/$WF" || { echo "::error::$WF has no Version dropdown (increment): merge the app's new build workflows first"; exit 1; }
+          ARGS="-f increment=$(printf '%q' "$INCREMENT")"
           echo "Inputs: ${ARGS:-(none)}"
           START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           # GitHub may take a few seconds to register the workflow that was just pushed
@@ -272,14 +262,13 @@ jobs:
           echo "::error::Build iOS $CONCLUSION (its run is deleted by cleanup: see last-run.md in og-test, and this run's summary)"
           exit 1
 
-  # Bump version: the one change ever made to the source repository. Only after its Build iOS succeeded (so the
+  # Version patch / minor / major: the one change ever made to the source repository. Only after its Build iOS succeeded (so the
   # source never claims a version that isn't on TestFlight); only the version, the same places set-version.sh writes it
-  # (ProjectSettings bundleVersion, version.properties, package.json / package-lock.json, the "# current version"
-  # Version box defaults). Build numbers aren't copied: every build raises them above TestFlight's / Google Play's anyway.
+  # (ProjectSettings bundleVersion, version.properties, package.json / package-lock.json). Build numbers aren't copied: every build raises them above TestFlight's / Google Play's anyway.
   version_back:
     name: Save the new version in the source repository
     needs: [import, build]
-    if: inputs.bump_version && needs.build.result == 'success' && needs.build.outputs.version_to != ''
+    if: needs.build.result == 'success' && needs.build.outputs.version_to != ''
     runs-on: ubuntu-latest
     steps:
       - name: Commit the version to the source repository
@@ -318,7 +307,6 @@ jobs:
                 fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
               }'
           fi
-          sed -i -E "s/^( +default: )\"[^\"]*\"( +# current version.*)$/\1\"$V\"\2/" .github/workflows/*.yml 2>/dev/null || true
 
           if git diff --quiet; then echo "The source repository already has version $V"; exit 0; fi
           git diff --stat
@@ -379,7 +367,7 @@ jobs:
           VERSION_FROM: ${{ needs.build.outputs.version_from }}
           VERSION_TO: ${{ needs.build.outputs.version_to }}
           VERSION_BACK: ${{ needs.version_back.result }}
-          BUMP_VERSION_INPUT: ${{ inputs.bump_version }}
+          INCREMENT_INPUT: ${{ inputs.increment }}
           REPO_LIST: ${{ inputs.repo_list }}
           SKIPPED: ${{ inputs.skipped }}
         run: |
