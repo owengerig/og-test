@@ -25,7 +25,7 @@ on:
         type: string
         default: ''
       increment:
-        description: "Version: patch 0.3.1→0.3.2, minor →0.4.0, major →1.0.0 (each also +1 build) · build only: just +1 build · skip: no change. The new version is saved in the source repo after a successful build"
+        description: Version Bump
         type: choice
         options: [patch, minor, major, build only, skip]
         default: build only
