@@ -22,7 +22,7 @@ of the run.
 | Step | What happens |
 |---|---|
 | Import | The repo is cloned and its files are committed onto `main` here, with its **Build iOS** workflow, the workflows that one calls (e.g. `set-version.yml`) and its `.github/scripts`. Its other workflows are left out. |
-| Run its Build iOS | Started with: version = its default, *Increment the build number*, *app-store-connect*, *Upload to TestFlight*, *Build even if nothing changed*, and **Self Hosted off**. og-test-workflow waits for it to finish. |
+| Run its Build iOS | Started with Version **build only** (**patch** with Bump version) and **Use SHR off**; it always uploads to TestFlight. (Older Build iOS workflows: *Increment the build number*, *app-store-connect*, *Upload to TestFlight*, *Build even if nothing changed*.) og-test-workflow waits for it to finish. |
 | Clean up | Always runs, pass or fail: runs still going are cancelled, `main` goes back to one commit holding only og-test's `.github` and **`last-run.md`**, and every other branch, tag, release, artifact, cache and earlier workflow run is deleted. |
 
 **GitHub's machines only.** og-test is public, so nothing runs on the laptop: Build iOS is started with Self Hosted
