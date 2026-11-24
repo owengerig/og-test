@@ -5,9 +5,9 @@
 #   import    clone the repository and its Build iOS workflow (with what that calls) into og-test
 #   build     run that Build iOS on GitHub's machines (signed .ipa, TestFlight upload) and wait for it
 #   cleanup   always, pass or fail: wipe og-test back to its own .github, delete branches, tags, releases,
-#             artifacts, caches and earlier runs, and add this repository's section to last-run.log
+#             artifacts, caches and earlier runs, and add this repository's section to last-run.md
 #
-# A failed repository doesn't stop the list: the next one still runs. last-run.log on main ends up with one section per
+# A failed repository doesn't stop the list: the next one still runs. last-run.md on main ends up with one section per
 # repository of this run (the previous run's log is replaced). The source repositories are only read, never changed.
 #
 # Secrets: push-github-secrets.ps1 -Only og-test (og-utils). KIT_TOKEN must list og-test in its Repository access
@@ -70,7 +70,7 @@ jobs:
                   print(f"::error::\"{item}\" is not a repository name or https link", file=sys.stderr); sys.exit(1)
               name = re.sub(r"\.git$", "", url.rsplit("/", 1)[-1])
               label = name + ("@" + ref if ref else "") + f" ({i} of {len(items)})"
-              out.append({"label": label, "url": url, "ref": ref})
+              out.append({"label": label, "url": url, "ref": ref, "total": str(len(items))})
           if not out:
               print("::error::The list is empty", file=sys.stderr); sys.exit(1)
           print(json.dumps(out))
@@ -96,6 +96,7 @@ jobs:
       repo_url: ${{ matrix.url }}
       ref: ${{ matrix.ref }}
       label: ${{ matrix.label }}
+      total: ${{ matrix.total }}
       repo_list: ${{ inputs.repos }}
       bump_version: ${{ inputs.bump_version }}
     secrets: inherit

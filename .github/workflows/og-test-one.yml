@@ -9,7 +9,7 @@
 #   2. build    starts that copied "Build iOS" (version left at its default, Increment the build number,
 #               app-store-connect, Upload to TestFlight, Build even if nothing changed, Self Hosted off) and waits.
 #   3. cleanup  always runs: anything still running is cancelled, main goes back to a single commit with og-test's
-#               own .github and last-run.log (this repository's section added to it), and every other branch, tag,
+#               own .github and last-run.md (this repository's section added to it), and every other branch, tag,
 #               release, artifact, cache and earlier workflow run is deleted.
 # The source repository is only read, never changed, except with Bump version: after a successful Build iOS the new
 # version (and nothing else) is committed to it.
@@ -28,13 +28,17 @@ on:
         type: string
         default: ''
       label:
-        description: Name shown for this repository in last-run.log; must match the calling job's name
+        description: Name shown for this repository in last-run.md; must match the calling job's name
         type: string
         default: ''
       repo_list:
-        description: The whole list og-test-workflow was started with (for last-run.log's header)
+        description: The whole list og-test-workflow was started with (for last-run.md's header)
         type: string
         default: ''
+      total:
+        description: How many repositories the whole list has (for last-run.md's header)
+        type: string
+        default: '1'
       bump_version:
         description: Start Build iOS with the repo's current version, patch + 1 (1.3.9 → 1.3.10)
         type: boolean
@@ -120,9 +124,9 @@ jobs:
             i=$((i + 1))
           done
 
-          # everything but .git, .github and last-run.log (earlier repositories of this run) is replaced by the imported files
-          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name last-run.log -exec rm -rf {} +
-          tar -C "$SRC" --exclude=./.git --exclude=./.github --exclude=./last-run.log -cf - . | tar -xf -
+          # everything but .git, .github and last-run.md (earlier repositories of this run) is replaced by the imported files
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name last-run.md -exec rm -rf {} +
+          tar -C "$SRC" --exclude=./.git --exclude=./.github --exclude=./last-run.md -cf - . | tar -xf -
           for F in "${COPY[@]}"; do cp "$SRC/.github/workflows/$F" ".github/workflows/$F"; done
           # the rest of its .github (scripts the workflows run), except its other workflows and repo settings files
           tar -C "$SRC/.github" --exclude=./workflows --exclude=./README.md --exclude=./dependabot.yml --exclude=./dependabot.yaml -cf - . | tar -C .github -xf -
@@ -171,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest   # only waits for Build iOS
     timeout-minutes: 350
     outputs:
-      run_id: ${{ steps.start.outputs.id }}   # kept even when this job fails, for last-run.log
+      run_id: ${{ steps.start.outputs.id }}   # kept even when this job fails, for last-run.md
       version_from: ${{ steps.start.outputs.version_from }}
       version_to: ${{ steps.start.outputs.version_to }}
     env:
@@ -261,7 +265,7 @@ jobs:
             gh run view "$ID" -R "$REPO" --log-failed 2>/dev/null | grep -E '##\[error\]|error CS[0-9]+|[Ee]rror:|\*\* (ARCHIVE|EXPORT|BUILD) FAILED' | cut -c1-400 | tail -40
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Build iOS $CONCLUSION (its run is deleted by cleanup: see last-run.log in og-test, and this run's summary)"
+          echo "::error::Build iOS $CONCLUSION (its run is deleted by cleanup: see last-run.md in og-test, and this run's summary)"
           exit 1
 
   # Bump version: the one change ever made to the source repository. Only after its Build iOS succeeded (so the
@@ -343,10 +347,22 @@ jobs:
             sleep 10
           done
 
-      # last-run.log: everything needed to see what happened, kept on main after the cleanup (each run replaces it)
-      - name: Write last-run.log
+      - name: Checkout og-test
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0   # main's short history: back to the previous cleanup's single commit
+          token: ${{ secrets.KIT_TOKEN || github.token }}   # KIT_TOKEN: force-pushing .github/workflows needs Workflows
+
+      # last-run.md: the whole run's result and duration, and a collapsible section per repository with everything
+      # needed to troubleshoot it (its Build iOS run is deleted below). Kept on main; each run replaces it.
+      - name: Write last-run.md
         env:
-          LOG: ${{ runner.temp }}/last-run.log
+          OUT: ${{ runner.temp }}/last-run.md
+          PREV: last-run.md
+          GH_TOKEN: ${{ github.token }}
+          LABEL: ${{ inputs.label || inputs.repo_url }}
+          TOTAL: ${{ inputs.total }}
           SOURCE_URL: ${{ inputs.repo_url }}
           SOURCE_REF: ${{ inputs.ref }}
           SOURCE_SHA: ${{ needs.import.outputs.source_sha }}
@@ -356,96 +372,23 @@ jobs:
           BUILD_ID: ${{ needs.build.outputs.run_id }}
           IMPORT_RESULT: ${{ needs.import.result }}
           BUILD_RESULT: ${{ needs.build.result }}
-          LABEL: ${{ inputs.label || inputs.repo_url }}
-          REPO_LIST: ${{ inputs.repo_list }}
           VERSION_FROM: ${{ needs.build.outputs.version_from }}
           VERSION_TO: ${{ needs.build.outputs.version_to }}
-          BUMP_VERSION_INPUT: ${{ inputs.bump_version }}
           VERSION_BACK: ${{ needs.version_back.result }}
+          BUMP_VERSION_INPUT: ${{ inputs.bump_version }}
+          REPO_LIST: ${{ inputs.repo_list }}
         run: |
-          set +e
-          RUN_URL="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
-          PART="$RUNNER_TEMP/this-repo.log"
-          # this repository's jobs in og-test-workflow are named "<label> / <job>"
-          MINE="select(.name | startswith($(jq -cn --arg l "$LABEL / " '$l')))"
-          section() { printf '\n\n==================== %s ====================\n' "$1"; }
-          jobs_table() {   # jobs and steps of a run (optionally only those matching the filter $2): result, times (UTC)
-            local Q='"\(.conclusion // .status | ascii_upcase)  \(.name)  [\(.started_at // "-") -> \(.completed_at // "-")]", (.steps[]? | "    \(.conclusion // .status)  \(.name)")'
-            gh api --paginate "repos/$REPO/actions/runs/$1/jobs?per_page=100" --jq ".jobs[] | ${2:-.} | $Q"
-          }
-          annotations() {   # GitHub's error / warning annotations of a run's jobs
-            for J in $(gh api --paginate "repos/$REPO/actions/runs/$1/jobs?per_page=100" --jq '.jobs[].id'); do
-              gh api "repos/$REPO/check-runs/$J/annotations" --jq '.[] | "\(.annotation_level | ascii_upcase): \(.message | gsub("\n"; " "))"' 2>/dev/null
-            done | grep -v -i 'node\.js 20' | sort -u
-          }
-          {
-            section "$LABEL"
-            echo "Written:          $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "Source:           $SOURCE_URL${SOURCE_REF:+ (ref $SOURCE_REF)} at ${SOURCE_SHA:-?}"
-            echo "Bundle ID:        ${BUNDLE_ID:-?}"
-            echo "Workflow run:     ${WF:-?} (copied: ${COPIED:-?})"
-            echo "Started with:     $BUILD_INPUTS"
-            if [ -n "$VERSION_TO" ]; then echo "Bump version:     $VERSION_FROM -> $VERSION_TO (saved in the source repository: $VERSION_BACK)"; else echo "Bump version:     $BUMP_VERSION_INPUT (version left at the workflow's default)"; fi
-            echo "Import:           $IMPORT_RESULT"
-            if [ -n "$BUILD_ID" ]; then
-              BUILD_CONCLUSION=$(gh run view "$BUILD_ID" -R "$REPO" --json conclusion --jq '.conclusion // "unfinished"' 2>/dev/null)
-              echo "Build iOS:        ${BUILD_CONCLUSION:-?}  (run $BUILD_ID, deleted by this cleanup)"
-            else
-              echo "Build iOS:        not started (og-test-workflow's build job: $BUILD_RESULT)"
-            fi
+          # og-test's own copy of the script: from the commit this run started from, like the rest of .github
+          if git merge-base --is-ancestor "$GITHUB_SHA" HEAD 2>/dev/null; then BASE="$GITHUB_SHA"; else BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi
+          git show "$BASE:.github/scripts/og-test-report.py" > "$RUNNER_TEMP/og-test-report.py"
+          python3 "$RUNNER_TEMP/og-test-report.py" || echo "::warning::last-run.md couldn't be written"
+          [ -f "$OUT" ] && echo "last-run.md: $(wc -l < "$OUT") lines, $(du -h "$OUT" | cut -f1)"
 
-            section "$LABEL: og-test-workflow jobs"
-            jobs_table "$GITHUB_RUN_ID" "$MINE"
-
-            # a failed og-test-workflow job of this repository (import, or the start / wait job): its whole log
-            for J in $(gh api --paginate "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq ".jobs[] | $MINE | select(.conclusion == \"failure\") | .id"); do
-              section "$LABEL: og-test-workflow log of job $J"
-              gh api "repos/$REPO/actions/jobs/$J/logs" 2>&1 | tail -3000
-            done
-
-            if [ -n "$BUILD_ID" ]; then
-              section "$LABEL: Build iOS jobs and steps"
-              jobs_table "$BUILD_ID"
-              section "$LABEL: Build iOS annotations"
-              annotations "$BUILD_ID"
-              if [ "$BUILD_CONCLUSION" != "success" ]; then
-                gh run view "$BUILD_ID" -R "$REPO" --log-failed > "$RUNNER_TEMP/failed.log" 2>&1
-                section "$LABEL: Build iOS error lines from the failed steps"
-                grep -E '##\[error\]|error CS[0-9]+|[Ee]rror:|Exception|\*\* (ARCHIVE|EXPORT|BUILD) FAILED|exit code [1-9]|Build Finished, Result' "$RUNNER_TEMP/failed.log" | cut -c1-600 | tail -300
-                section "$LABEL: Build iOS log of the failed steps (last 20000 lines)"
-                tail -20000 "$RUNNER_TEMP/failed.log"
-              fi
-            fi
-          } > "$PART" 2>&1
-
-          # one last-run.log per og-test-workflow run: earlier repositories of this run stay in it (their sections
-          # first), a log from an earlier run is replaced
-          gh api "repos/$REPO/contents/last-run.log?ref=main" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/prev.log" 2>/dev/null || : > "$RUNNER_TEMP/prev.log"
-          if grep -q -F "og-test-workflow: run $GITHUB_RUN_NUMBER  $RUN_URL" "$RUNNER_TEMP/prev.log"; then
-            cat "$RUNNER_TEMP/prev.log" "$PART" > "$LOG"
-          else
-            {
-              echo "og-test last run (replaced by every og-test-workflow run)"
-              echo "og-test-workflow: run $GITHUB_RUN_NUMBER  $RUN_URL"
-              echo "Repositories:     $REPO_LIST"
-              cat "$PART"
-            } > "$LOG"
-          fi
-          echo "last-run.log: $(wc -l < "$LOG") lines, $(du -h "$LOG" | cut -f1)"
-          head -30 "$PART"
-
-      - name: Checkout og-test
-        uses: actions/checkout@v5
-        with:
-          ref: main
-          fetch-depth: 0   # main's short history: back to the previous cleanup's single commit
-          token: ${{ secrets.KIT_TOKEN || github.token }}   # KIT_TOKEN: force-pushing .github/workflows needs Workflows
-
-      # main = one commit with only og-test's own .github (this workflow and the README) and last-run.log: the
+      # main = one commit with only og-test's own .github (this workflow and the README) and last-run.md: the
       # imported files, the copied workflows and all earlier commits are gone from the branch
-      - name: Reset main to og-test's own files and last-run.log, without history
+      - name: Reset main to og-test's own files and last-run.md, without history
         env:
-          LOG: ${{ runner.temp }}/last-run.log
+          LOG: ${{ runner.temp }}/last-run.md
           LABEL: ${{ inputs.label || inputs.repo_url }}
         run: |
           set -euo pipefail
@@ -457,10 +400,10 @@ jobs:
           if git merge-base --is-ancestor "$GITHUB_SHA" HEAD 2>/dev/null; then BASE="$GITHUB_SHA"; else BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi
           GITHUB_TREE=$(git rev-parse "$BASE:.github")
           echo "og-test's own files from $(git rev-parse --short "$BASE")"
-          [ -f "$LOG" ] || echo "last-run.log couldn't be written (see the Write last-run.log step of $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID)" > "$LOG"
+          [ -f "$LOG" ] || echo "last-run.md couldn't be written (see the Write last-run.md step of $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID)" > "$LOG"
           LOG_BLOB=$(git hash-object -w "$LOG")
-          TREE=$(printf '040000 tree %s\t.github\n100644 blob %s\tlast-run.log\n' "$GITHUB_TREE" "$LOG_BLOB" | git mktree)
-          COMMIT=$(git commit-tree "$TREE" -m "og-test: workflows and last-run.log (cleaned up after $LABEL, run $GITHUB_RUN_NUMBER)")
+          TREE=$(printf '040000 tree %s\t.github\n100644 blob %s\tlast-run.md\n' "$GITHUB_TREE" "$LOG_BLOB" | git mktree)
+          COMMIT=$(git commit-tree "$TREE" -m "og-test: workflows and last-run.md (cleaned up after $LABEL, run $GITHUB_RUN_NUMBER)")
           git push -q --force origin "$COMMIT:refs/heads/main"
           echo "main is now $(git rev-parse --short "$COMMIT") (no parents)"
 

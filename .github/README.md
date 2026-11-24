@@ -13,14 +13,14 @@ that repository's Build iOS succeeds, the new version is committed to the source
 same files set-version.sh writes it to). If the build fails, the source keeps its old version.
 
 They run **one at a time, in that order**, each through `og-test-one.yml`: import → its Build iOS → cleanup, then the
-next one. A failed one doesn't stop the rest. At the end, `last-run.log` on `main` has a section for every repository
+next one. A failed one doesn't stop the rest. At the end, `last-run.md` on `main` has a section for every repository
 of the run.
 
 | Step | What happens |
 |---|---|
 | Import | The repo is cloned and its files are committed onto `main` here, with its **Build iOS** workflow, the workflows that one calls (e.g. `set-version.yml`) and its `.github/scripts`. Its other workflows are left out. |
 | Run its Build iOS | Started with: version = its default, *Increment the build number*, *app-store-connect*, *Upload to TestFlight*, *Build even if nothing changed*, and **Self Hosted off**. og-test-workflow waits for it to finish. |
-| Clean up | Always runs, pass or fail: runs still going are cancelled, `main` goes back to one commit holding only og-test's `.github` and **`last-run.log`**, and every other branch, tag, release, artifact, cache and earlier workflow run is deleted. |
+| Clean up | Always runs, pass or fail: runs still going are cancelled, `main` goes back to one commit holding only og-test's `.github` and **`last-run.md`**, and every other branch, tag, release, artifact, cache and earlier workflow run is deleted. |
 
 **GitHub's machines only.** og-test is public, so nothing runs on the laptop: Build iOS is started with Self Hosted
 off, and the copied workflows' laptop labels (`og-linux`, `og-windows`, the `LINUX_RUNNER` / `WINDOWS_RUNNER`
@@ -35,16 +35,19 @@ Changes made to the copied workflows: the runner labels above, and `secrets.IOS_
 becomes `secrets.IOS_PROVISIONING_PROFILE_<APP>` (`<APP>` = the bundle ID's last part in capitals, e.g. `CLASH2D`,
 `NATOSQUAD`), because og-test holds every app's profile.
 
-Only `.github` and `last-run.log` live here permanently, which is why this README is in `.github/` (GitHub shows it on
+Only `.github` and `last-run.md` live here permanently, which is why this README is in `.github/` (GitHub shows it on
 the repo page).
 
-## last-run.log
+## last-run.md
 
-Written by each repository's cleanup, since its Build iOS run is deleted: one section per repository of the latest
-og-test-workflow run (a new run replaces the whole file). Each section has:
-the source repo, commit, bundle ID and the settings Build iOS was started with; every job and step of og-test-workflow
-and of Build iOS with its result and times; GitHub's error annotations; and, when something failed, the error lines
-and the last 20,000 lines of the failed steps' log (secrets show as `***`, as in GitHub's own logs).
+Written by each repository's cleanup, since its Build iOS run is deleted (a new og-test-workflow run replaces the file).
+
+- **At the top:** whether the whole run succeeded or failed (how many repositories failed) and how long it took, in minutes.
+- **One collapsible section per repository:** its one-line summary says whether it succeeded or failed (and where), the
+  version and build it built, whether it went to TestFlight, and whether Bump version saved the new version in the
+  source repo. Expand it for everything needed to troubleshoot: source commit, bundle ID, settings, every job and
+  failed step with times, GitHub's annotations, the error lines, and the last 1,500 lines of the failed steps' log
+  (secrets show as `***`).
 
 ## Setup
 
