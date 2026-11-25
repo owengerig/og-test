@@ -23,7 +23,7 @@ of the run.
 |---|---|
 | Import | The repo is cloned and its files are committed onto `main` here, with its **Build iOS** workflow, the workflows that one calls (e.g. `set-version.yml`) and its `.github/scripts`. Its other workflows are left out. |
 | Run its Build iOS | Started with the chosen **Version** (default **build only**); Build iOS always builds on GitHub's machines and uploads to TestFlight. og-test-workflow waits for it to finish. |
-| Clean up | Always runs, pass or fail: runs still going are cancelled, `main` goes back to one commit holding only og-test's `.github` and **`last-run.md`**, and every other branch, tag, release, artifact, cache and earlier workflow run is deleted. |
+| Clean up | Always runs, pass or fail: runs of the copied workflows still going are cancelled (og-test-workflow runs waiting in the queue are left alone and start next), `main` goes back to one commit holding only og-test's `.github` and **`last-run.md`**, and every other branch, tag, release, artifact, cache and finished workflow run is deleted. |
 
 **GitHub's machines only.** og-test is public, so nothing runs on the laptop: Build iOS is started with Self Hosted
 off, and the copied workflows' laptop labels (`og-linux`, `og-windows`, the `LINUX_RUNNER` / `WINDOWS_RUNNER`

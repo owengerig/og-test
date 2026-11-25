@@ -338,11 +338,12 @@ jobs:
       # e.g. when this run was cancelled while Build iOS was still going
       - name: Cancel runs still going
         run: |
-          for ID in $(gh api "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.status != "completed") | .id' | grep -vx "$GITHUB_RUN_ID" || true); do
+          # og-test-workflow runs waiting in the queue are left alone (the next repos someone started); only the copied workflows' runs are cancelled
+          for ID in $(gh api "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.status != "completed" and (.path | endswith("/og-test-workflow.yml") | not)) | .id' | grep -vx "$GITHUB_RUN_ID" || true); do
             gh run cancel "$ID" -R "$REPO" && echo "Cancelled run $ID" || true
           done
           for i in $(seq 1 30); do
-            LEFT=$(gh api "repos/$REPO/actions/runs?per_page=100" --jq '[.workflow_runs[] | select(.status != "completed") | .id] | map(select(. != '"$GITHUB_RUN_ID"')) | length')
+            LEFT=$(gh api "repos/$REPO/actions/runs?per_page=100" --jq '[.workflow_runs[] | select(.status != "completed" and (.path | endswith("/og-test-workflow.yml") | not)) | .id] | map(select(. != '"$GITHUB_RUN_ID"')) | length')
             [ "$LEFT" = "0" ] && break
             sleep 10
           done
@@ -440,7 +441,7 @@ jobs:
 
       - name: Delete earlier workflow runs
         run: |
-          IDS=$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[].id' | grep -vx "$GITHUB_RUN_ID" || true)
+          IDS=$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" --jq '.workflow_runs[] | select(.status == "completed") | .id' | grep -vx "$GITHUB_RUN_ID" || true)   # queued or running og-test-workflow runs are kept
           for ID in $IDS; do
             gh api -X DELETE "repos/$REPO/actions/runs/$ID" && echo "Deleted run $ID" || echo "::warning::Couldn't delete run $ID (still running?)"
           done
