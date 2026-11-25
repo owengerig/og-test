@@ -1,0 +1,82 @@
+# og-test-workflow: build OG Software apps for iOS (and send them to TestFlight) with each app's own "Build iOS"
+# workflow, from a throwaway copy in this repo. Give it a comma-separated list of repositories; one at a time, in that
+# order, each one goes through og-test-one.yml (leave Repos empty for every repository the KIT_TOKEN can see that has
+# a Build iOS workflow; the rest are skipped):
+#
+#   import    clone the repository and its Build iOS workflow (with what that calls) into og-test
+#   build     run that Build iOS on GitHub's machines (signed .ipa, TestFlight upload) with the chosen Version, and
+#             wait for it
+#   cleanup   always, pass or fail: wipe og-test back to its own .github, delete branches, tags, releases,
+#             artifacts, caches and earlier runs, and add this repository's section to last-run.md
+#
+# A failed repository doesn't stop the list: the next one still runs. last-run.md on main ends up with one section per
+# repository of this run (the previous run's log is replaced). The source repositories are only read, never changed.
+#
+# Secrets: push-github-secrets.ps1 -Only og-test (og-utils). KIT_TOKEN must list og-test in its Repository access
+# (Contents and Workflows: read and write) and must be able to read every repository in the list.
+
+name: og-test-workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Repos 2 Build (empty = all, comma-separated names or links)"
+        type: string
+        default: ''
+      increment:
+        description: Version Bump
+        type: choice
+        options: [patch, minor, major, build only, skip]
+        default: build only
+
+permissions:
+  contents: write   # import commits, cleanup of branches / tags / releases
+  actions: write    # start each copied Build iOS; cleanup of artifacts, caches and workflow runs
+
+# one og-test run at a time: a second run waits (never cancels one), so a cleanup can't wipe another run's import
+concurrency:
+  group: og-test
+  cancel-in-progress: false
+
+jobs:
+  list:
+    name: Read the list
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.list.outputs.repos }}
+      names: ${{ steps.list.outputs.names }}
+      skipped: ${{ steps.list.outputs.skipped }}
+    steps:
+      - name: Checkout og-test's scripts
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Read the list
+        id: list
+        env:
+          REPOS: ${{ inputs.repos }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.KIT_TOKEN }}   # lists the repos it can see when Repos is empty
+        run: python3 .github/scripts/og-test-list.py
+
+  # one repository at a time, in the list's order; a failure doesn't stop the ones after it
+  repo:
+    name: ${{ matrix.label }}
+    needs: list
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.list.outputs.repos) }}
+    uses: ./.github/workflows/og-test-one.yml
+    with:
+      repo_url: ${{ matrix.url }}
+      ref: ${{ matrix.ref }}
+      label: ${{ matrix.label }}
+      total: ${{ matrix.total }}
+      repo_list: ${{ needs.list.outputs.names }}
+      skipped: ${{ needs.list.outputs.skipped }}
+      increment: ${{ inputs.increment }}
+    secrets: inherit
