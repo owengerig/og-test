@@ -21,7 +21,7 @@ of the run.
 
 | Step | What happens |
 |---|---|
-| Import | The repo is cloned and its files are committed onto `main` here, with its **Build iOS** workflow, the workflows that one calls (e.g. `set-version.yml`) and its `.github/scripts`. Its other workflows are left out. Files a previous run left in `.github` (anything but og-test's own) are removed first. |
+| Import | The repo is cloned and its files are committed onto `main` here, with its **Build iOS** workflow, the workflows that one calls (e.g. `set-version.yml`) and its `.github/scripts`. When the app's Build iOS uses the shared build steps in [og-workflows](https://github.com/owengerig/og-workflows) (private, so og-test can't call them), the shared workflows it calls are copied from there too and called as local copies; this needs og-workflows in `KIT_TOKEN`'s repository access. Its other workflows are left out. Files a previous run left in `.github` (anything but og-test's own) are removed first. |
 | Run its Build iOS | Started with the chosen **Version** (default **build only**); Build iOS always builds on GitHub's machines and uploads to TestFlight. og-test-workflow waits for it to finish. |
 | Clean up | Always runs, pass or fail: runs of the copied workflows still going are cancelled (og-test-workflow runs waiting in the queue are left alone and start next), `main` goes back to one commit holding only og-test's `.github` and **`last-run.md`**, and every other branch, tag, release, artifact, cache and finished workflow run is deleted. The reset of `main` is retried up to 5 times (GitHub once answered it with a 500). |
 

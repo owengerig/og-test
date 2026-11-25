@@ -2,7 +2,8 @@
 # once per repository in its list, one after another. See og-test-workflow.yml and .github/README.md.
 #
 #   1. import   clones the repository and commits its files onto main here, together with its "Build iOS" workflow,
-#               the workflows that one calls (e.g. set-version.yml) and its .github/scripts. Its other workflows are
+#               the workflows that one calls (its own, and the shared ones from og-workflows, e.g. unity-ios.yml and
+#               set-version.yml, called from the copies instead of og-workflows) and its .github/scripts. Its other workflows are
 #               left out. Changes made to the copied workflows: IOS_PROVISIONING_PROFILE_BASE64 becomes
 #               IOS_PROVISIONING_PROFILE_<APP> (og-test holds every app's profile), and laptop runner labels become
 #               GitHub's (og-test is public, so nothing runs on the laptop).
@@ -110,6 +111,7 @@ jobs:
           SRC: ${{ steps.clone.outputs.dir }}
           URL: ${{ steps.clone.outputs.url }}
           SHA: ${{ steps.clone.outputs.sha }}
+          TOKEN: ${{ secrets.KIT_TOKEN }}   # reads og-workflows (private)
         run: |
           set -euo pipefail
           # its "Build iOS" workflow (by name; build-ios.yml if none is called that)
@@ -140,6 +142,37 @@ jobs:
           find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name last-run.md -exec rm -rf {} +
           tar -C "$SRC" --exclude=./.git --exclude=./.github --exclude=./last-run.md -cf - . | tar -xf -
           for F in "${COPY[@]}"; do cp "$SRC/.github/workflows/$F" ".github/workflows/$F"; done
+          FROM_SOURCE=("${COPY[@]}")
+
+          # The apps' build steps live in owengerig/og-workflows (private: a public repo can't call its workflows).
+          # Copy the shared workflows the copied ones call (and what those call) from there too, and point the calls
+          # at the copies. The shared workflows hold their scripts, so nothing else is needed.
+          if grep -q -E 'uses: *owengerig/og-workflows/' $(printf '.github/workflows/%s ' "${COPY[@]}"); then
+            OGW_REF=$(grep -h -oE 'uses: *owengerig/og-workflows/\.github/workflows/[A-Za-z0-9._-]+@[A-Za-z0-9._/-]+' $(printf '.github/workflows/%s ' "${COPY[@]}") | head -n1 | sed 's/.*@//')
+            OGW="$RUNNER_TEMP/og-workflows"
+            for try in 1 2 3; do
+              rm -rf "$OGW"
+              git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
+                clone -q --depth 1 --branch "$OGW_REF" https://github.com/owengerig/og-workflows "$OGW" && break
+              [ "$try" = 3 ] && { echo "::error::Couldn't clone owengerig/og-workflows ($OGW_REF). Is og-workflows in KIT_TOKEN's repository access?"; exit 1; }
+              echo "::warning::Cloning og-workflows failed (try $try of 3), trying again in 30s"; sleep 30
+            done
+            i=0
+            while [ $i -lt ${#COPY[@]} ]; do
+              F=".github/workflows/${COPY[$i]}"
+              for DEP in $(grep -oE 'uses: *owengerig/og-workflows/\.github/workflows/[A-Za-z0-9._-]+@' "$F" | sed -E 's#.*/##; s#@$##' | sort -u); do
+                [ -f "$OGW/.github/workflows/$DEP" ] || { echo "::error::$F calls og-workflows' $DEP, which og-workflows ($OGW_REF) doesn't have"; exit 1; }
+                if [[ " ${COPY[*]} " != *" $DEP "* ]]; then
+                  [ ! -e ".github/workflows/$DEP" ] || { echo "::error::og-workflows' $DEP has the same name as a workflow already in og-test"; exit 1; }
+                  cp "$OGW/.github/workflows/$DEP" ".github/workflows/$DEP"
+                  COPY+=("$DEP")
+                fi
+              done
+              sed -i -E 's#uses: *owengerig/og-workflows/\.github/workflows/([A-Za-z0-9._-]+)@[A-Za-z0-9._/-]+#uses: ./.github/workflows/\1#g' "$F"
+              i=$((i + 1))
+            done
+            echo "Copied from og-workflows ($OGW_REF): ${COPY[*]:${#FROM_SOURCE[@]}}"
+          fi
           # the rest of its .github (scripts the workflows run), except its other workflows and repo settings files
           tar -C "$SRC/.github" --exclude=./workflows --exclude=./README.md --exclude=./dependabot.yml --exclude=./dependabot.yaml -cf - . | tar -C .github -xf -
 
@@ -149,8 +182,11 @@ jobs:
           [ -n "$BID" ] || BID=$(grep -h -m1 -oE 'com\.ogsoftware\.[A-Za-z0-9_-]+' ".github/workflows/$WF" || true)
           [ -n "$BID" ] || { echo "::error::Couldn't find the app's bundle ID (ProjectSettings.asset or BUNDLE_ID in $WF)"; exit 1; }
           APP=$(printf '%s' "${BID##*.}" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9\n' '_')
-          for F in "${COPY[@]}"; do
+          # (only in the app's own files: a shared workflow's secrets are the names its caller passes them under)
+          for F in "${FROM_SOURCE[@]}"; do
             sed -i -E "s/secrets\.IOS_PROVISIONING_PROFILE_BASE64/secrets.IOS_PROVISIONING_PROFILE_$APP/g; s/secrets\.IOS_WATCH_PROVISIONING_PROFILE_BASE64/secrets.IOS_WATCH_PROVISIONING_PROFILE_$APP/g" ".github/workflows/$F"
+          done
+          for F in "${COPY[@]}"; do
             # GitHub's machines only (og-test is public): the laptop's runner labels become GitHub's, and the
             # LINUX_RUNNER / WINDOWS_RUNNER variables are ignored
             sed -i -E "s/'og-linux'/'ubuntu-24.04'/g; s/'og-windows'/'windows-latest'/g; s/vars\.(LINUX|WINDOWS)_RUNNER *\|\| *//g" ".github/workflows/$F"
